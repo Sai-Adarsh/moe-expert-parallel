@@ -67,6 +67,8 @@ No NCCL measurements are included. To compare a real fabric, record GPU topology
 
 The suite verifies the routing invariants and both socket transports against an independently calculated expert output. Capacity tests check per-expert bounds, first-route admission across ranks, renormalization, and zero contribution for dropped tokens. The suite also checks socket open failure, malformed CLI options, and nonfinite or mismatched results.
 
+Both execution backends check the rank-pair grid, tensor dimensions, route ownership, and finite gate weights before dispatch. CPU tests cover the shared validation, including a route sent to a rank that does not own its expert.
+
 ```sh
 cmake -S . -B build/coverage -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping"

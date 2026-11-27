@@ -157,6 +157,7 @@ void expert(const Workload& work, std::size_t id, std::span<float, width> vector
 }  // namespace
 
 CpuExecution run_cpu(const Workload& work, Wire wire) {
+    validate_workload(work);
     const auto begin = Clock::now();
     Rows packed(work.routes.size());
     for (std::size_t pair = 0; pair < work.routes.size(); ++pair) {
