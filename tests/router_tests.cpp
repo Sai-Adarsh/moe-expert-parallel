@@ -178,6 +178,28 @@ void error_metric() {
     rejects([] { require_exact_match({1, -2}, {1, -3}); }, "CPU outputs differ");
 }
 
+void invalid_workloads() {
+    auto workload = work(2, 2);
+    workload.routes[0].push_back({0, 2, 1.0f});
+    rejects([&] { run_cpu(workload, Wire::packed); }, "wrong destination rank");
+
+    workload.routes[0][0] = {2, 0, 1.0f};
+    rejects([&] { run_cpu(workload, Wire::rowwise); }, "wrong source rank");
+
+    workload.routes[0][0] = {0, 0, std::numeric_limits<float>::quiet_NaN()};
+    rejects([&] { run_cpu(workload, Wire::packed); }, "nonfinite route weight");
+    workload.routes[0][0] = {0, 0, 1.0f};
+
+    workload.up.pop_back();
+    rejects([&] { run_cpu(workload, Wire::packed); }, "expert weight shape");
+    workload.up.push_back(0.0f);
+    workload.activations.pop_back();
+    rejects([&] { run_cpu(workload, Wire::packed); }, "activation shape");
+    workload.activations.push_back(0.0f);
+    workload.routes.pop_back();
+    rejects([&] { run_cpu(workload, Wire::packed); }, "rank-pair grid");
+}
+
 void cannot_open_socket() {
     struct Limits {
         rlimit saved{};
@@ -205,6 +227,7 @@ int main() try {
     transport(true);
     transport(false);
     error_metric();
+    invalid_workloads();
     cannot_open_socket();
     return 0;
 } catch (const std::exception& error) {

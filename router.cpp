@@ -8,6 +8,47 @@
 #include <stdexcept>
 #include <string>
 
+namespace {
+
+bool has_extent(std::size_t elements, std::size_t rows, std::size_t columns) {
+    return elements % columns == 0 && elements / columns == rows;
+}
+
+} // namespace
+
+void validate_workload(const Workload& work) {
+    if (work.ranks == 0 || work.tokens_per_rank == 0) {
+        throw std::runtime_error("workload needs at least one rank and one token per rank");
+    }
+    if (!has_extent(work.routes.size(), work.ranks, work.ranks)) {
+        throw std::runtime_error("rank-pair grid shape does not match the rank count");
+    }
+    if (work.activations.size() % width != 0 ||
+        !has_extent(work.activations.size() / width, work.ranks, work.tokens_per_rank)) {
+        throw std::runtime_error("activation shape does not match the rank and token counts");
+    }
+    constexpr auto weights_per_rank = experts_per_rank * width * hidden;
+    if (!has_extent(work.up.size(), work.ranks, weights_per_rank) ||
+        !has_extent(work.down.size(), work.ranks, weights_per_rank)) {
+        throw std::runtime_error("expert weight shape does not match the rank count");
+    }
+    for (std::size_t pair = 0; pair < work.routes.size(); ++pair) {
+        const auto source = pair / work.ranks;
+        const auto destination = pair % work.ranks;
+        for (const auto& route : work.routes[pair]) {
+            if (route.token / work.tokens_per_rank != source) {
+                throw std::runtime_error("route token belongs to the wrong source rank");
+            }
+            if (route.expert / experts_per_rank != destination) {
+                throw std::runtime_error("route expert belongs to the wrong destination rank");
+            }
+            if (!std::isfinite(route.weight)) {
+                throw std::runtime_error("nonfinite route weight");
+            }
+        }
+    }
+}
+
 void make_routes(Workload& work, bool balanced, std::optional<std::size_t> capacity) {
     const std::size_t expert_count = work.ranks * experts_per_rank;
     const std::size_t tokens = work.ranks * work.tokens_per_rank;

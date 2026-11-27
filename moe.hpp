@@ -44,6 +44,8 @@ struct CpuExecution {
     std::size_t send_calls;
 };
 
+// Both backends validate the rank-pair grid before dispatching expert rows.
+void validate_workload(const Workload& work);
 CpuExecution run_cpu(const Workload& work, Wire wire);
 Execution run_nccl(const Workload& work);
 

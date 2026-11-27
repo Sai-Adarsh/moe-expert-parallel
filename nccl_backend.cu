@@ -182,6 +182,7 @@ void exchange(const Workload& work, const std::vector<std::unique_ptr<Rank>>& ra
 } // namespace
 
 Execution run_nccl(const Workload& work) {
+    validate_workload(work);
     int available = 0;
     check(cudaGetDeviceCount(&available));
     if (available < static_cast<int>(work.ranks)) {
