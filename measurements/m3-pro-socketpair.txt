@@ -1,0 +1,45 @@
+strict expert load 2396 2410 569 545 578 584 562 548
+  max/mean=2.3535 modeled_remote_bytes_per_round_trip=1566720 modeled_peer_messages_rowwise=12240 modeled_peer_messages_packed=24
+policy,trial,wire,pack_ms,dispatch_socket_ms,expert_wall_ms,peak_rank_expert_ms,return_socket_ms,combine_ms,observed_send_calls
+strict,1,rowwise,0.0738,10.3303,19.1322,19.0314,14.1803,0.1045,12240
+strict,1,packed,0.0757,0.5677,5.1363,5.0945,0.8987,0.0955,24
+strict,2,rowwise,0.0690,19.0630,14.6762,14.4430,19.6460,0.4763,12240
+strict,2,packed,0.0822,1.2197,7.6300,7.5046,1.4144,0.1100,24
+strict,3,rowwise,0.0670,6.5212,4.5886,4.5187,5.9448,0.0925,12240
+strict,3,packed,0.2129,1.3755,6.6799,6.5998,0.5705,0.0871,24
+strict,4,rowwise,0.0682,6.4013,4.1252,4.0770,5.8186,0.0888,12240
+strict,4,packed,0.0705,0.4752,9.7983,8.2501,4.1807,2.9897,24
+strict,5,rowwise,0.2013,7.1973,4.3479,4.3019,4.7351,0.0964,12240
+strict,5,packed,0.0772,1.5585,10.8820,8.0086,1.2647,0.0909,24
+strict,6,rowwise,0.0696,4.9626,6.1467,6.0895,6.6449,0.2616,12240
+strict,6,packed,0.2360,1.3723,5.1717,4.7013,0.6734,0.0860,24
+strict,7,rowwise,0.0671,8.6569,4.5338,4.4306,8.9220,0.2248,12240
+strict,7,packed,0.0655,0.5328,4.8880,4.8548,1.1439,0.1133,24
+strict,8,rowwise,0.1353,8.4913,4.6812,4.6126,5.9908,0.0883,12240
+strict,8,packed,0.1397,0.6232,4.4499,4.4186,0.7908,0.0870,24
+strict,9,rowwise,0.0665,4.8304,4.5984,4.5448,4.7886,0.0838,12240
+strict,9,packed,0.0683,0.7110,4.3347,4.2984,0.5255,0.0843,24
+strict transport=unix_socketpair parity=exact median_rowwise_round_trip_ms=12.4660 median_packed_round_trip_ms=1.9460
+balanced expert load 1416 1419 892 894 901 906 887 877
+  max/mean=1.3857 modeled_remote_bytes_per_round_trip=1465856 modeled_peer_messages_rowwise=11452 modeled_peer_messages_packed=24
+policy,trial,wire,pack_ms,dispatch_socket_ms,expert_wall_ms,peak_rank_expert_ms,return_socket_ms,combine_ms,observed_send_calls
+balanced,1,rowwise,0.0784,5.3552,5.3665,2.8139,6.3285,0.0858,11452
+balanced,1,packed,0.0652,0.7173,3.4215,3.0553,0.5850,0.0993,24
+balanced,2,rowwise,0.0645,4.2263,7.2512,7.1874,6.0426,0.2021,11452
+balanced,2,packed,0.1316,0.9829,3.4614,3.4287,1.3860,0.1038,24
+balanced,3,rowwise,0.0660,5.0745,3.0786,3.0476,5.1822,0.0930,11452
+balanced,3,packed,0.0655,0.7311,7.3008,7.2080,1.9429,0.1975,24
+balanced,4,rowwise,0.0635,5.8767,3.4611,3.4135,6.6456,0.0853,11452
+balanced,4,packed,0.0644,0.4062,9.6753,9.5850,1.4585,0.2208,24
+balanced,5,rowwise,0.0918,5.4465,3.1008,3.0553,5.1482,0.0858,11452
+balanced,5,packed,0.0716,1.0713,4.3340,4.2974,1.1845,0.0997,24
+balanced,6,rowwise,0.0639,4.4780,2.9462,2.8252,4.9392,0.0900,11452
+balanced,6,packed,0.0806,0.4285,2.8931,2.8702,0.4765,0.0834,24
+balanced,7,rowwise,0.0650,5.0023,2.5823,2.5530,4.9295,0.0870,11452
+balanced,7,packed,0.0646,0.4169,3.3280,3.3026,0.4879,0.0855,24
+balanced,8,rowwise,0.0669,4.8326,3.3375,3.2677,4.3915,0.0839,11452
+balanced,8,packed,0.0630,0.4108,2.4095,2.3758,0.4130,0.0814,24
+balanced,9,rowwise,0.0641,4.1704,3.1712,3.1140,4.4480,0.0856,11452
+balanced,9,packed,0.0622,0.3639,2.4038,2.3812,0.4341,0.1220,24
+balanced transport=unix_socketpair parity=exact median_rowwise_round_trip_ms=10.2567 median_packed_round_trip_ms=1.3022
+policy_delta changed_top_two_sets=1830 total_tokens=4096 output_max_abs=0.1841 output_rms_abs=0.0217

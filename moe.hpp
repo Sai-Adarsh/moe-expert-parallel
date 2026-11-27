@@ -30,4 +30,18 @@ struct Execution {
     double combine_ms;
 };
 
+enum class Wire { rowwise, packed };
+
+struct CpuExecution {
+    std::vector<float> result;
+    double pack_ms;
+    double dispatch_socket_ms;
+    double feed_forward_ms;
+    double peak_rank_ffn_ms;
+    double return_socket_ms;
+    double combine_ms;
+    std::size_t send_calls;
+};
+
+CpuExecution run_cpu(const Workload& work, Wire wire);
 Execution run_nccl(const Workload& work);
