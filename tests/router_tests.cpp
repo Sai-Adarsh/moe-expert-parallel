@@ -161,6 +161,11 @@ void transport(bool with_remote) {
     require(difference(expected, packed.result).max_abs == 0, "packed weighted expert output");
     require(rowwise.send_calls == (with_remote ? 12 : 0), "rowwise socket send count");
     require(packed.send_calls == (with_remote ? 4 : 0), "packed socket send count");
+    if (!with_remote) {
+        require(rowwise.dispatch_socket_ms == 0 && rowwise.return_socket_ms == 0 &&
+                packed.dispatch_socket_ms == 0 && packed.return_socket_ms == 0,
+                "local-only routes should skip socket transport");
+    }
 }
 
 void error_metric() {
@@ -184,6 +189,7 @@ void cannot_open_socket() {
         }
         ~Limits() { setrlimit(RLIMIT_NOFILE, &saved); }
     } limit;
+    transport(false);
     auto workload = work(2, 1);
     make_routes(workload, false);
     rejects([&] { run_cpu(workload, Wire::packed); }, "open local transport");
