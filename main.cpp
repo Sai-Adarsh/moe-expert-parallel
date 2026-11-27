@@ -3,22 +3,16 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <chrono>
+#include <csignal>
+#include <cstdint>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <random>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
-
-using Clock = std::chrono::steady_clock;
-
-static double elapsed(Clock::time_point since) {
-    return std::chrono::duration<double, std::milli>(Clock::now() - since).count();
-}
 
 static std::size_t count(std::string_view text, std::size_t max) {
     std::size_t value = 0;
@@ -27,102 +21,6 @@ static std::size_t count(std::string_view text, std::size_t max) {
         throw std::invalid_argument("invalid numeric option");
     }
     return value;
-}
-
-static void make_routes(Workload& work, bool balanced) {
-    const std::size_t expert_count = work.ranks * experts_per_rank;
-    const std::size_t tokens = work.ranks * work.tokens_per_rank;
-    std::vector<std::size_t> load(expert_count);
-    std::vector<float> scores(expert_count);
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> noise(-1.0f, 1.0f);
-    const double fair_share = static_cast<double>(tokens * 2) / expert_count;
-    for (std::size_t token = 0; token < tokens; ++token) {
-        const auto src = token / work.tokens_per_rank;
-        for (std::size_t expert = 0; expert < expert_count; ++expert) {
-            // Skew scores toward the first shard to exercise expert hot spots.
-            scores[expert] = noise(rng) + (expert < experts_per_rank ? 0.8f : 0.0f);
-        }
-        std::array<std::size_t, 2> chosen{};
-        for (std::size_t slot = 0; slot < chosen.size(); ++slot) {
-            double best = -1e9;
-            for (std::size_t expert = 0; expert < expert_count; ++expert) {
-                if (slot != 0 && expert == chosen[0]) continue;
-                const double score = scores[expert] - (balanced ? 1.5 * load[expert] / fair_share : 0.0);
-                if (score > best) {
-                    best = score;
-                    chosen[slot] = expert;
-                }
-            }
-            ++load[chosen[slot]];
-        }
-        const auto max_score = std::max(scores[chosen[0]], scores[chosen[1]]);
-        const float first = std::exp(scores[chosen[0]] - max_score);
-        const float second = std::exp(scores[chosen[1]] - max_score);
-        for (std::size_t i = 0; i < chosen.size(); ++i) {
-            const auto expert = chosen[i];
-            const auto dst = expert / experts_per_rank;
-            work.routes[src * work.ranks + dst].push_back({
-                token, expert, (i == 0 ? first : second) / (first + second)
-            });
-        }
-    }
-}
-
-static Execution run_cpu(const Workload& work) {
-    const auto begin = Clock::now();
-    std::vector<std::vector<float>> packed(work.routes.size());
-    for (std::size_t pair = 0; pair < work.routes.size(); ++pair) {
-        auto& buffer = packed[pair];
-        buffer.reserve(work.routes[pair].size() * width);
-        for (const auto& route : work.routes[pair]) {
-            const auto *input = work.activations.data() + route.token * width;
-            buffer.insert(buffer.end(), input, input + width);
-        }
-    }
-    const auto dispatch = elapsed(begin);
-
-    const auto ff_start = Clock::now();
-    for (std::size_t dst = 0; dst < work.ranks; ++dst) {
-        // One rank processes the experts it owns, across every remote source.
-        for (std::size_t src = 0; src < work.ranks; ++src) {
-            const auto pair = src * work.ranks + dst;
-            for (std::size_t i = 0; i < work.routes[pair].size(); ++i) {
-                const auto expert = work.routes[pair][i].expert;
-                std::span<float, width> vector(packed[pair].data() + i * width, width);
-                const float* up = work.up.data() + expert * hidden * width;
-                const float* down = work.down.data() + expert * width * hidden;
-                std::array<float, hidden> residual{};
-                for (std::size_t row = 0; row < hidden; ++row) {
-                    float value = 0.0f;
-                    for (std::size_t col = 0; col < width; ++col) {
-                        value += up[row * width + col] * vector[col];
-                    }
-                    residual[row] = std::max(0.0f, value);
-                }
-                for (std::size_t row = 0; row < width; ++row) {
-                    float value = 0.0f;
-                    for (std::size_t col = 0; col < hidden; ++col) {
-                        value += down[row * hidden + col] * residual[col];
-                    }
-                    vector[row] = value;
-                }
-            }
-        }
-    }
-    const auto feed_forward = elapsed(ff_start);
-
-    const auto combine_start = Clock::now();
-    std::vector<float> result(work.activations.size(), 0.0f);
-    for (std::size_t pair = 0; pair < work.routes.size(); ++pair) {
-        for (std::size_t i = 0; i < work.routes[pair].size(); ++i) {
-            const auto& route = work.routes[pair][i];
-            for (std::size_t d = 0; d < width; ++d) {
-                result[route.token * width + d] += route.weight * packed[pair][i * width + d];
-            }
-        }
-    }
-    return {std::move(result), dispatch, feed_forward, elapsed(combine_start)};
 }
 
 static void print_routing(const Workload& work, std::string_view name) {
@@ -143,20 +41,76 @@ static void print_routing(const Workload& work, std::string_view name) {
     std::cout << name << " expert load";
     for (auto value : load) std::cout << ' ' << value;
     std::cout << "\n  max/mean=" << *std::max_element(load.begin(), load.end()) / mean
-              << " remote_bytes_per_round_trip=" << 2 * remote_rows * width * sizeof(float)
-              << " remote_messages_rowwise=" << 2 * remote_rows
-              << " remote_messages_packed=" << 2 * peer_messages << '\n';
+              << " modeled_remote_bytes_per_round_trip=" << 2 * remote_rows * width * sizeof(float)
+              << " modeled_peer_messages_rowwise=" << 2 * remote_rows
+              << " modeled_peer_messages_packed=" << 2 * peer_messages << '\n';
 }
 
-static void print_timing(std::string_view label, const Execution& exec) {
-    std::cout << label << " dispatch_ms=" << exec.dispatch_ms
-              << " expert_ms=" << exec.feed_forward_ms
-              << " return_combine_ms=" << exec.combine_ms << '\n';
+static std::vector<std::uint32_t> route_masks(const Workload& work) {
+    std::vector<std::uint32_t> result(work.ranks * work.tokens_per_rank);
+    for (const auto& peer : work.routes) {
+        for (const auto& route : peer) {
+            result[route.token] |= std::uint32_t{1} << route.expert;
+        }
+    }
+    return result;
 }
+
+static std::vector<float> compare_wires(const Workload& work, std::string_view policy, std::size_t trials) {
+    print_routing(work, policy);
+    std::cout << "policy,trial,wire,pack_ms,dispatch_socket_ms,expert_wall_ms,peak_rank_expert_ms,"
+                 "return_socket_ms,combine_ms,observed_send_calls\n";
+    std::vector<float> result;
+    std::array<std::vector<double>, 2> transport_samples;
+    for (std::size_t trial = 0; trial <= trials; ++trial) {
+        std::array<CpuExecution, 2> samples;
+        for (std::size_t offset = 0; offset < samples.size(); ++offset) {
+            const auto i = (trial + offset) % samples.size();
+            samples[i] = run_cpu(work, i == 0 ? Wire::rowwise : Wire::packed);
+        }
+        require_exact_match(samples[0].result, samples[1].result);
+        if (trial == 0) continue;
+        const auto print = [&](std::string_view wire, const CpuExecution& result) {
+            std::cout << policy << ',' << trial << ',' << wire << ',' << result.pack_ms << ','
+                      << result.dispatch_socket_ms << ',' << result.feed_forward_ms << ','
+                      << result.peak_rank_ffn_ms << ',' << result.return_socket_ms << ','
+                      << result.combine_ms << ',' << result.send_calls << '\n';
+        };
+        print("rowwise", samples[0]);
+        print("packed", samples[1]);
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            transport_samples[i].push_back(samples[i].dispatch_socket_ms + samples[i].return_socket_ms);
+        }
+        result = std::move(samples[1].result);
+    }
+    const auto median = [](std::vector<double>& values) {
+        std::sort(values.begin(), values.end());
+        const auto middle = values.size() / 2;
+        return values.size() % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+    };
+    std::cout << policy << " transport=unix_socketpair parity=exact"
+              << " median_rowwise_round_trip_ms=" << median(transport_samples[0])
+              << " median_packed_round_trip_ms=" << median(transport_samples[1]) << '\n';
+    return result;
+}
+
+#ifdef MOE_HAS_NCCL
+static void compare_nccl(const Workload& work, const std::vector<float>& reference, std::string_view policy) {
+    const auto device = run_nccl(work);
+    const auto errors = difference(reference, device.result);
+    std::cout << policy << " transport=nccl packed"
+              << " dispatch_ms=" << device.dispatch_ms << " expert_ms=" << device.feed_forward_ms
+              << " return_combine_ms=" << device.combine_ms << " cpu_gpu_max_abs=" << errors.max_abs
+              << " cpu_gpu_rms_abs=" << errors.rms_abs << '\n';
+    if (errors.max_abs > 1e-5) throw std::runtime_error("NCCL output exceeds CPU error tolerance");
+}
+#endif
 
 int main(int argc, char** argv) try {
+    std::signal(SIGPIPE, SIG_IGN);
     std::size_t ranks = 2;
     std::size_t tokens = 256;
+    std::size_t trials = 5;
     bool nccl = false;
     bool balanced = true;
     for (int arg = 1; arg < argc; ++arg) {
@@ -165,7 +119,8 @@ int main(int argc, char** argv) try {
         else if (option == "--strict-top-k") balanced = false;
         else if (option == "--ranks" && arg + 1 < argc) ranks = count(argv[++arg], 16);
         else if (option == "--tokens-per-rank" && arg + 1 < argc) tokens = count(argv[++arg], 16384);
-        else throw std::invalid_argument("usage: moe_router [--ranks N] [--tokens-per-rank N] [--strict-top-k] [--nccl]");
+        else if (option == "--trials" && arg + 1 < argc) trials = count(argv[++arg], 32);
+        else throw std::invalid_argument("usage: moe_router [--ranks N] [--tokens-per-rank N] [--trials N] [--strict-top-k] [--nccl]");
     }
     if (ranks < 2) throw std::invalid_argument("at least two ranks are required");
 #ifndef MOE_HAS_NCCL
@@ -185,27 +140,29 @@ int main(int argc, char** argv) try {
     }
 
     std::cout << std::fixed << std::setprecision(4);
+
     make_routes(work, false);
-    print_routing(work, "strict");
+    const auto strict_routes = route_masks(work);
+    const auto strict_result = compare_wires(work, "strict", trials);
+#ifdef MOE_HAS_NCCL
+    if (nccl) compare_nccl(work, strict_result, "strict");
+#endif
     if (balanced) {
         for (auto& peer : work.routes) peer.clear();
         make_routes(work, true);
-        print_routing(work, "balanced");
-    }
-    auto reference = run_cpu(work);
-    print_timing("cpu", reference);
-#ifdef MOE_HAS_NCCL
-    if (nccl) {
-        const auto device = run_nccl(work);
-        print_timing("nccl", device);
-        float error = 0.0f;
-        for (std::size_t i = 0; i < reference.result.size(); ++i) {
-            error = std::max(error, std::abs(reference.result[i] - device.result[i]));
+        const auto balanced_result = compare_wires(work, "balanced", trials);
+        const auto balanced_routes = route_masks(work);
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < strict_routes.size(); ++i) {
+            changed += strict_routes[i] != balanced_routes[i];
         }
-        std::cout << "cpu_gpu_max_abs_error=" << error << '\n';
-        if (error > 1e-5f) return 2;
-    }
+        const auto drift = difference(strict_result, balanced_result);
+        std::cout << "policy_delta changed_top_two_sets=" << changed << " total_tokens=" << strict_routes.size()
+                  << " output_max_abs=" << drift.max_abs << " output_rms_abs=" << drift.rms_abs << '\n';
+#ifdef MOE_HAS_NCCL
+        if (nccl) compare_nccl(work, balanced_result, "balanced");
 #endif
+    }
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
