@@ -1,49 +1,91 @@
 #include "moe.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
+#include <limits>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 
-void make_routes(Workload& work, bool balanced) {
+void make_routes(Workload& work, bool balanced, std::optional<std::size_t> capacity) {
     const std::size_t expert_count = work.ranks * experts_per_rank;
     const std::size_t tokens = work.ranks * work.tokens_per_rank;
     std::vector<std::size_t> load(expert_count);
-    std::vector<float> scores(expert_count);
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> noise(-1.0f, 1.0f);
     const double fair_share = static_cast<double>(tokens * 2) / expert_count;
-    for (std::size_t token = 0; token < tokens; ++token) {
-        const auto src = token / work.tokens_per_rank;
+    for (auto& peer : work.routes) peer.clear();
+
+    const auto fill_scores = [&](std::span<float> scores) {
         for (std::size_t expert = 0; expert < expert_count; ++expert) {
             // Skew scores toward the first shard to exercise expert hot spots.
             scores[expert] = noise(rng) + (expert < experts_per_rank ? 0.8f : 0.0f);
         }
-        std::array<std::size_t, 2> chosen{};
-        for (std::size_t slot = 0; slot < chosen.size(); ++slot) {
-            double best = -1e9;
-            for (std::size_t expert = 0; expert < expert_count; ++expert) {
-                if (slot != 0 && expert == chosen[0]) continue;
-                const double score = scores[expert] - (balanced ? 1.5 * load[expert] / fair_share : 0.0);
-                if (score > best) {
-                    best = score;
-                    chosen[slot] = expert;
-                }
+    };
+    const auto select = [&](std::span<const float> scores, std::size_t exclude) {
+        double best = -std::numeric_limits<double>::infinity();
+        std::size_t chosen = expert_count;
+        for (std::size_t expert = 0; expert < expert_count; ++expert) {
+            if (expert == exclude || (capacity && load[expert] >= *capacity)) continue;
+            const double score = scores[expert] - (balanced ? 1.5 * load[expert] / fair_share : 0.0);
+            if (score > best) {
+                best = score;
+                chosen = expert;
             }
-            ++load[chosen[slot]];
         }
-        const auto max_score = std::max(scores[chosen[0]], scores[chosen[1]]);
-        const float first = std::exp(scores[chosen[0]] - max_score);
-        const float second = std::exp(scores[chosen[1]] - max_score);
-        for (std::size_t i = 0; i < chosen.size(); ++i) {
-            const auto expert = chosen[i];
-            const auto dst = expert / experts_per_rank;
-            work.routes[src * work.ranks + dst].push_back({
-                token, expert, (i == 0 ? first : second) / (first + second)
-            });
+        if (chosen != expert_count) ++load[chosen];
+        return chosen;
+    };
+    const auto append = [&](std::size_t token, std::size_t expert, float weight) {
+        const auto source = token / work.tokens_per_rank;
+        const auto destination = expert / experts_per_rank;
+        work.routes[source * work.ranks + destination].push_back({token, expert, weight});
+    };
+    const auto emit = [&](std::size_t token, std::span<const float> scores,
+                          std::size_t first, std::size_t second) {
+        if (second == expert_count) {
+            append(token, first, 1.0f);
+            return;
         }
+        const auto max_score = std::max(scores[first], scores[second]);
+        const float first_weight = std::exp(scores[first] - max_score);
+        const float second_weight = std::exp(scores[second] - max_score);
+        append(token, first, first_weight / (first_weight + second_weight));
+        append(token, second, second_weight / (first_weight + second_weight));
+    };
+
+    if (!capacity) {
+        std::vector<float> scores(expert_count);
+        for (std::size_t token = 0; token < tokens; ++token) {
+            fill_scores(scores);
+            const auto first = select(scores, expert_count);
+            const auto second = select(scores, first);
+            emit(token, scores, first, second);
+        }
+        return;
+    }
+
+    std::vector<float> logits(tokens * expert_count);
+    const auto scores_at = [&](std::size_t token) {
+        return std::span(logits).subspan(token * expert_count, expert_count);
+    };
+    for (std::size_t token = 0; token < tokens; ++token) fill_scores(scores_at(token));
+    // Give every token a first slot before filling second slots. Round-robin
+    // source ranks so early source ranks do not take the entire budget.
+    const auto token_at = [&](std::size_t order) {
+        return (order % work.ranks) * work.tokens_per_rank + order / work.ranks;
+    };
+    std::vector<std::size_t> primary(tokens);
+    for (std::size_t order = 0; order < tokens; ++order) {
+        const auto token = token_at(order);
+        primary[token] = select(scores_at(token), expert_count);
+    }
+    for (std::size_t order = 0; order < tokens; ++order) {
+        const auto token = token_at(order);
+        if (primary[token] == expert_count) continue;
+        const auto scores = scores_at(token);
+        emit(token, scores, primary[token], select(scores, primary[token]));
     }
 }
 

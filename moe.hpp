@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 inline constexpr std::size_t width = 32;
@@ -46,7 +47,7 @@ struct CpuExecution {
 CpuExecution run_cpu(const Workload& work, Wire wire);
 Execution run_nccl(const Workload& work);
 
-void make_routes(Workload& work, bool balanced);
+void make_routes(Workload& work, bool balanced, std::optional<std::size_t> capacity = std::nullopt);
 
 struct Difference {
     double max_abs = 0;

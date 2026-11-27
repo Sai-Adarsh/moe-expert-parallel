@@ -2,8 +2,11 @@
 
 #include <sys/resource.h>
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -75,6 +78,60 @@ void routing() {
     require(maximum(balanced_load) < maximum(strict_load), "load penalty did not balance the skewed fixture");
 }
 
+void limited_capacity(bool balanced, std::size_t capacity) {
+    constexpr std::size_t ranks = 4, per_rank = 8, experts = ranks * experts_per_rank;
+    auto workload = work(ranks, per_rank);
+    for (std::size_t id = 0; id < experts; ++id) {
+        workload.up[id * width * hidden] = 1.0f;
+        workload.down[id * width * hidden] = 1.0f;
+    }
+    std::array<std::size_t, experts> loads{};
+    std::array<std::uint32_t, ranks * per_rank> masks{};
+    std::array<float, masks.size()> weights{};
+    for (std::size_t token = 0; token < masks.size(); ++token) {
+        workload.activations[token * width] = static_cast<float>(token + 1);
+    }
+
+    make_routes(workload, balanced, capacity);
+    for (const auto& peer : workload.routes) {
+        for (const auto& route : peer) {
+            const auto bit = std::uint32_t{1} << route.expert;
+            require((masks[route.token] & bit) == 0, "assigned one expert twice");
+            masks[route.token] |= bit;
+            weights[route.token] += route.weight;
+            require(++loads[route.expert] <= capacity, "expert capacity exceeded");
+        }
+    }
+    const auto rowwise = run_cpu(workload, Wire::rowwise);
+    const auto packed = run_cpu(workload, Wire::packed);
+    require_exact_match(rowwise.result, packed.result);
+    std::array<std::size_t, ranks> admitted{};
+    for (std::size_t token = 0; token < masks.size(); ++token) {
+        const auto slots = std::popcount(masks[token]);
+        const auto output = packed.result[token * width];
+        if (slots == 0) {
+            require(output == 0, "dropped token ran an expert");
+            continue;
+        }
+        require(slots <= 2 && std::abs(weights[token] - 1.0f) < 1e-6f, "gate was not renormalized");
+        require(std::abs(output - workload.activations[token * width]) < 1e-5f,
+                "admitted token lost its weighted output");
+        ++admitted[token / per_rank];
+        if (capacity * experts <= masks.size()) {
+            require(slots == 1, "added a second route before single-route admission");
+        }
+    }
+    for (const auto n : admitted) {
+        require(n == std::min(per_rank, capacity * experts / ranks), "unfair or incomplete admission");
+    }
+    if (capacity > per_rank / experts_per_rank) {
+        require(std::ranges::any_of(masks, [](auto mask) { return std::popcount(mask) == 2; }),
+                "available capacity did not fill second routes");
+    }
+    make_routes(workload, balanced);
+    routed(workload);
+}
+
 void transport(bool with_remote) {
     constexpr std::size_t tokens = 3;
     auto workload = work(2, tokens);
@@ -136,6 +193,9 @@ void cannot_open_socket() {
 
 int main() try {
     routing();
+    for (const bool balanced : {false, true}) {
+        for (const std::size_t capacity : {2, 4, 5}) limited_capacity(balanced, capacity);
+    }
     transport(true);
     transport(false);
     error_metric();
