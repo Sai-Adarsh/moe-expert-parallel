@@ -89,6 +89,8 @@ Exchange transfer(Rows outgoing, std::size_t ranks, Wire wire) {
         }
     }
 
+    if (peers.empty()) return {std::move(incoming), 0, 0};
+
     // A single socket pair meters local CPU serialization costs. Recv runs on a
     // separate thread so large vectors can exceed kernel socket-buffer capacity.
     Channel channel;
