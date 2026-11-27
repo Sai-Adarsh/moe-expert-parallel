@@ -229,9 +229,11 @@ Execution run_nccl(const Workload& work) {
     const auto dispatch_start = Clock::now();
     for (const auto& rank : ranks) {
         check(cudaSetDevice(static_cast<int>(rank->id)));
-        check(cudaMemcpyAsync(rank->send.data, rank->host_activations.data(),
-                              rank->host_activations.size() * sizeof(float),
-                              cudaMemcpyHostToDevice, rank->stream));
+        if (!rank->host_activations.empty()) {
+            check(cudaMemcpyAsync(rank->send.data, rank->host_activations.data(),
+                                  rank->host_activations.size() * sizeof(float),
+                                  cudaMemcpyHostToDevice, rank->stream));
+        }
         if (!rank->host_experts.empty()) {
             check(cudaMemcpyAsync(rank->expert_ids.data, rank->host_experts.data(),
                                   rank->host_experts.size() * sizeof(int),
@@ -257,6 +259,7 @@ Execution run_nccl(const Workload& work) {
     const auto combine_start = Clock::now();
     exchange(work, ranks, true);
     for (const auto& rank : ranks) {
+        if (rank->host_returns.empty()) continue;
         check(cudaSetDevice(static_cast<int>(rank->id)));
         check(cudaMemcpyAsync(rank->host_returns.data(), rank->returned.data,
                               rank->host_returns.size() * sizeof(float),

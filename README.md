@@ -1,6 +1,26 @@
 # MoE expert parallel router
 
-Each rank owns two experts. Every token selects two distinct experts and combines their two-layer feed-forward outputs using normalized gate weights. The input generator skews the gate toward rank 0. The balanced policy subtracts a running load penalty before choosing the two experts. Weighting still uses the original gate scores for the chosen experts.
+Each rank owns two experts. By default, a token selects two distinct experts and combines their two-layer feed-forward outputs using normalized gate weights. The input generator skews the gate toward rank 0. The balanced policy subtracts a running load penalty before choosing experts, then weights them using the original scores.
+
+## Bound the work per expert
+
+Build the CPU example with the CMake commands in the local transport section below.
+
+`--expert-capacity N` caps each expert at `N` activation rows for the batch. Routing sweeps the source ranks round-robin and tries to give each token one expert before assigning second experts. A token with one available expert gets weight 1. A token with no route gets a zero feed-forward contribution, and the CLI counts it under `dropped_tokens`. Duplicated experts are excluded. The bounded router stores the batch's gate scores for its second pass.
+
+```sh
+for cap in 100 128 192; do
+  ./build/moe_router --ranks 4 --tokens-per-rank 256 --trials 5 --expert-capacity "$cap"
+done
+```
+
+Both policies produced these counts on the 1,024-token CPU workload on an Apple M3 Pro. Rowwise and packed outputs agreed exactly within each policy for all five measured pairs.
+
+| Capacity per expert | Assignments | Single route | Two routes | Dropped |
+|---|---:|---:|---:|---:|
+| 100 | 800 | 800 | 0 | 224 |
+| 128 | 1,024 | 1,024 | 0 | 0 |
+| 192 | 1,536 | 512 | 512 | 0 |
 
 ## Measure a local transport baseline
 
@@ -45,7 +65,7 @@ No NCCL measurements are included. To compare a real fabric, record GPU topology
 
 ## Tests and coverage
 
-The suite verifies the routing invariants and both socket transports against an independently calculated expert output. It also checks local routes, socket open failure when descriptors are exhausted, malformed CLI options, and rejection of nonfinite or mismatched results.
+The suite verifies the routing invariants and both socket transports against an independently calculated expert output. Capacity tests check per-expert bounds, first-route admission across ranks, renormalization, and zero contribution for dropped tokens. The suite also checks socket open failure, malformed CLI options, and nonfinite or mismatched results.
 
 ```sh
 cmake -S . -B build/coverage -DCMAKE_BUILD_TYPE=Debug \
@@ -59,4 +79,4 @@ xcrun llvm-cov report build/coverage/moe_router \
   --show-branch-summary main.cpp cpu_backend.cpp router.cpp moe.hpp
 ```
 
-On Linux, use `llvm-profdata` and `llvm-cov` from the same Clang toolchain without the `xcrun` prefix. The instrumented AppleClang CPU build covered 373/382 lines (97.64%) and 145/162 branches (89.51%). Its remaining line gaps are in peer I/O error cleanup. The NCCL/CUDA backend requires a separate Linux multi-GPU build and run.
+On Linux, use `llvm-profdata` and `llvm-cov` from the same Clang toolchain without the `xcrun` prefix. The instrumented AppleClang CPU build covered 461/470 lines (98.09%) and 164/182 branches (90.11%). It covered all 134 instrumented lines and 44 branches in `router.cpp`. The NCCL/CUDA backend requires a separate Linux multi-GPU build and run.

@@ -14,6 +14,12 @@ check(1 "invalid numeric option" --ranks 17)
 check(1 "at least two ranks" --ranks 1)
 check(0 "strict transport=unix_socketpair parity=exact" --ranks 2 --tokens-per-rank 8 --trials 2 --strict-top-k)
 check(0 "policy_delta changed_top_two_sets=" --ranks 3 --tokens-per-rank 12 --trials 3)
+check(0 "policy_delta changed_expert_sets=" --ranks 3 --tokens-per-rank 12 --trials 3 --expert-capacity 10)
+check(0 "assignments=8 single_route_tokens=8 dropped_tokens=24"
+      --ranks 4 --tokens-per-rank 8 --trials 1 --expert-capacity 1)
+check(0 "assignments=32 single_route_tokens=32 dropped_tokens=0"
+      --ranks 4 --tokens-per-rank 8 --trials 1 --expert-capacity 4)
+check(1 "invalid numeric option" --expert-capacity 0)
 if(NOT NCCL_ENABLED)
     check(1 "MOE_ENABLE_NCCL" --nccl)
 endif()

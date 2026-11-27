@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <csignal>
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -23,13 +25,16 @@ static std::size_t count(std::string_view text, std::size_t max) {
     return value;
 }
 
-static void print_routing(const Workload& work, std::string_view name) {
+static void print_routing(const Workload& work, std::string_view name,
+                          const std::vector<std::uint32_t>& masks) {
     std::size_t peer_messages = 0;
     std::size_t remote_rows = 0;
+    std::size_t assignments = 0;
     std::vector<std::size_t> load(work.ranks * experts_per_rank);
     for (std::size_t src = 0; src < work.ranks; ++src) {
         for (std::size_t dst = 0; dst < work.ranks; ++dst) {
             const auto& route = work.routes[src * work.ranks + dst];
+            assignments += route.size();
             for (const auto& row : route) ++load[row.expert];
             if (src != dst && !route.empty()) {
                 ++peer_messages;
@@ -37,10 +42,14 @@ static void print_routing(const Workload& work, std::string_view name) {
             }
         }
     }
-    const double mean = 2.0 * work.ranks * work.tokens_per_rank / load.size();
+    const double mean = static_cast<double>(assignments) / load.size();
+    const auto dropped = std::ranges::count(masks, 0);
+    const auto single = std::ranges::count_if(masks, [](std::uint32_t mask) { return std::has_single_bit(mask); });
     std::cout << name << " expert load";
     for (auto value : load) std::cout << ' ' << value;
-    std::cout << "\n  max/mean=" << *std::max_element(load.begin(), load.end()) / mean
+    std::cout << "\n  max/mean=" << (mean == 0 ? 0.0 : *std::max_element(load.begin(), load.end()) / mean)
+              << " assignments=" << assignments << " single_route_tokens=" << single
+              << " dropped_tokens=" << dropped
               << " modeled_remote_bytes_per_round_trip=" << 2 * remote_rows * width * sizeof(float)
               << " modeled_peer_messages_rowwise=" << 2 * remote_rows
               << " modeled_peer_messages_packed=" << 2 * peer_messages << '\n';
@@ -56,8 +65,9 @@ static std::vector<std::uint32_t> route_masks(const Workload& work) {
     return result;
 }
 
-static std::vector<float> compare_wires(const Workload& work, std::string_view policy, std::size_t trials) {
-    print_routing(work, policy);
+static std::vector<float> compare_wires(const Workload& work, std::string_view policy, std::size_t trials,
+                                        const std::vector<std::uint32_t>& masks) {
+    print_routing(work, policy, masks);
     std::cout << "policy,trial,wire,pack_ms,dispatch_socket_ms,expert_wall_ms,peak_rank_expert_ms,"
                  "return_socket_ms,combine_ms,observed_send_calls\n";
     std::vector<float> result;
@@ -111,6 +121,7 @@ int main(int argc, char** argv) try {
     std::size_t ranks = 2;
     std::size_t tokens = 256;
     std::size_t trials = 5;
+    std::optional<std::size_t> capacity;
     bool nccl = false;
     bool balanced = true;
     for (int arg = 1; arg < argc; ++arg) {
@@ -120,7 +131,9 @@ int main(int argc, char** argv) try {
         else if (option == "--ranks" && arg + 1 < argc) ranks = count(argv[++arg], 16);
         else if (option == "--tokens-per-rank" && arg + 1 < argc) tokens = count(argv[++arg], 16384);
         else if (option == "--trials" && arg + 1 < argc) trials = count(argv[++arg], 32);
-        else throw std::invalid_argument("usage: moe_router [--ranks N] [--tokens-per-rank N] [--trials N] [--strict-top-k] [--nccl]");
+        else if (option == "--expert-capacity" && arg + 1 < argc) capacity = count(argv[++arg], 16 * 16384);
+        else throw std::invalid_argument("usage: moe_router [--ranks N] [--tokens-per-rank N] [--trials N] "
+                                         "[--expert-capacity N] [--strict-top-k] [--nccl]");
     }
     if (ranks < 2) throw std::invalid_argument("at least two ranks are required");
 #ifndef MOE_HAS_NCCL
@@ -140,24 +153,25 @@ int main(int argc, char** argv) try {
     }
 
     std::cout << std::fixed << std::setprecision(4);
+    if (capacity) std::cout << "expert_capacity=" << *capacity << '\n';
 
-    make_routes(work, false);
+    make_routes(work, false, capacity);
     const auto strict_routes = route_masks(work);
-    const auto strict_result = compare_wires(work, "strict", trials);
+    const auto strict_result = compare_wires(work, "strict", trials, strict_routes);
 #ifdef MOE_HAS_NCCL
     if (nccl) compare_nccl(work, strict_result, "strict");
 #endif
     if (balanced) {
-        for (auto& peer : work.routes) peer.clear();
-        make_routes(work, true);
-        const auto balanced_result = compare_wires(work, "balanced", trials);
+        make_routes(work, true, capacity);
         const auto balanced_routes = route_masks(work);
+        const auto balanced_result = compare_wires(work, "balanced", trials, balanced_routes);
         std::size_t changed = 0;
         for (std::size_t i = 0; i < strict_routes.size(); ++i) {
             changed += strict_routes[i] != balanced_routes[i];
         }
         const auto drift = difference(strict_result, balanced_result);
-        std::cout << "policy_delta changed_top_two_sets=" << changed << " total_tokens=" << strict_routes.size()
+        std::cout << "policy_delta " << (capacity ? "changed_expert_sets=" : "changed_top_two_sets=")
+                  << changed << " total_tokens=" << strict_routes.size()
                   << " output_max_abs=" << drift.max_abs << " output_rms_abs=" << drift.rms_abs << '\n';
 #ifdef MOE_HAS_NCCL
         if (nccl) compare_nccl(work, balanced_result, "balanced");
