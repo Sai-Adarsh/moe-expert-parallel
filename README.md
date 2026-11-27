@@ -42,3 +42,21 @@ One process assigns one GPU per rank and places each rank's weights on its devic
 No NCCL measurements are included. To compare a real fabric, record GPU topology, ranks, workload shape, precision, expert load, and both the host-inclusive and device-only transfer intervals. Both paths use synthetic activations and weights.
 
 [NCCL point-to-point communication](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/p2p.html)
+
+## Tests and coverage
+
+The suite verifies the routing invariants and both socket transports against an independently calculated expert output. It also checks local routes, socket open failure when descriptors are exhausted, malformed CLI options, and rejection of nonfinite or mismatched results.
+
+```sh
+cmake -S . -B build/coverage -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping"
+cmake --build build/coverage -j
+profiles="$(mktemp -d)"
+LLVM_PROFILE_FILE="$profiles/%m-%p.profraw" ctest --test-dir build/coverage --output-on-failure
+xcrun llvm-profdata merge -sparse "$profiles"/*.profraw -o "$profiles/merged.profdata"
+xcrun llvm-cov report build/coverage/moe_router \
+  -object build/coverage/moe_router_tests -instr-profile="$profiles/merged.profdata" \
+  --show-branch-summary main.cpp cpu_backend.cpp router.cpp moe.hpp
+```
+
+On Linux, use `llvm-profdata` and `llvm-cov` from the same Clang toolchain without the `xcrun` prefix. The instrumented AppleClang CPU build covered 373/382 lines (97.64%) and 145/162 branches (89.51%). Its remaining line gaps are in peer I/O error cleanup. The NCCL/CUDA backend requires a separate Linux multi-GPU build and run.

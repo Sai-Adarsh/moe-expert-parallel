@@ -45,3 +45,13 @@ struct CpuExecution {
 
 CpuExecution run_cpu(const Workload& work, Wire wire);
 Execution run_nccl(const Workload& work);
+
+void make_routes(Workload& work, bool balanced);
+
+struct Difference {
+    double max_abs = 0;
+    double rms_abs = 0;
+};
+
+Difference difference(const std::vector<float>& left, const std::vector<float>& right);
+void require_exact_match(const std::vector<float>& rowwise, const std::vector<float>& packed);
